@@ -19,6 +19,12 @@ struct TaskItem
     int reminder_state{};
 };
 
+struct CompletedItem
+{
+    std::wstring text;
+    std::wstring completed_at;
+};
+
 class TaskApp
 {
 public:
@@ -72,7 +78,9 @@ private:
     void ShowReminderMenu();
     void SetSelectedTaskReminder();
     void ClearSelectedTaskReminder();
+    void ClearCompletedTasks();
     void RefreshTaskList() const;
+    void RefreshCompletedList() const;
     void UpdateSummary() const;
     void UpdateButtonLabels() const;
     void UpdateClock() const;
@@ -88,19 +96,25 @@ private:
     LRESULT HandleListCustomDraw(LPARAM l_param) const;
     void LoadTasks();
     void SaveTasks() const;
+    void LoadCompletedTasks();
+    void SaveCompletedTasks() const;
     void LoadSettings();
     void SaveSettings() const;
     void LoadBackgroundImage();
     std::wstring BuildSummaryText() const;
+    std::wstring BuildCompletedSummaryText() const;
     std::wstring ReadInputText() const;
     int ReadPriority() const;
     int SelectedTaskIndex() const;
     std::wstring TaskFilePath() const;
+    std::wstring CompletedTaskFilePath() const;
     std::wstring SettingsFilePath() const;
     bool IsAutoLaunchEnabled() const;
     void SetAutoLaunchEnabled(bool enabled);
     std::wstring BuildTaskLine(const TaskItem& task, bool include_internal_state) const;
     bool ParseTaskLine(std::string_view line, TaskItem& task, bool allow_legacy_format) const;
+    std::wstring BuildCompletedLine(const CompletedItem& item) const;
+    bool ParseCompletedLine(std::string_view line, CompletedItem& item) const;
 
     static std::wstring Trim(std::wstring text);
     static std::wstring Escape(std::wstring_view text);
@@ -130,7 +144,9 @@ private:
     HWND top_button_{nullptr};
     HWND auto_launch_button_{nullptr};
     HWND background_button_{nullptr};
+    HWND clear_completed_button_{nullptr};
     HWND list_{nullptr};
+    HWND completed_list_{nullptr};
     HFONT font_{nullptr};
     HFONT small_font_{nullptr};
     HBRUSH edit_brush_{nullptr};
@@ -142,8 +158,10 @@ private:
     HWND hovered_control_{nullptr};
     RECT startup_bounds_{CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720};
     RECT summary_bounds_{};
+    RECT completed_header_bounds_{};
     std::wstring background_path_;
     std::unique_ptr<Gdiplus::Image> background_image_;
     ULONG_PTR gdiplus_token_{};
     std::vector<TaskItem> tasks_;
+    std::vector<CompletedItem> completed_tasks_;
 };
