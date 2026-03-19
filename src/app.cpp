@@ -544,11 +544,6 @@ bool TaskApp::Initialize(int command_show)
         return false;
     }
 
-    if (top_most_)
-    {
-        SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-
     ShowWindow(window_, command_show);
     UpdateWindow(window_);
     return true;
@@ -794,7 +789,7 @@ LRESULT TaskApp::HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM
                         ChangeSelectedPriority(1);
                         return 0;
                     case kTopButtonId:
-                        ToggleTopMost();
+                        ToggleSortMode();
                         return 0;
                     case kAutoLaunchButtonId:
                         ToggleAutoLaunch();
@@ -1261,6 +1256,7 @@ void TaskApp::AddTaskFromInput()
     SetWindowTextW(input_, L"");
     SendMessageW(priority_, CB_SETCURSEL, 0, 0);
 
+    ApplyTaskOrder();
     RefreshTaskList();
     SaveTasks();
     SetFocus(input_);
@@ -1301,6 +1297,7 @@ void TaskApp::ChangeSelectedPriority(int delta)
         return;
     }
 
+    const int task_id = tasks_[index].id;
     const int original = tasks_[index].priority;
     tasks_[index].priority = std::clamp(tasks_[index].priority + delta, 0, 3);
     if (tasks_[index].priority == original)
@@ -1308,9 +1305,9 @@ void TaskApp::ChangeSelectedPriority(int delta)
         return;
     }
 
-    std::wstring priority_text = FormatPriority(tasks_[index].priority);
-    ListView_SetItemText(list_, index, 0, priority_text.data());
-    RedrawTaskRow(index);
+    ApplyTaskOrder();
+    RefreshTaskList();
+    SelectTaskById(task_id);
     SaveTasks();
     UpdateSummary();
 }
@@ -1324,25 +1321,24 @@ void TaskApp::CycleSelectedPriority()
         return;
     }
 
+    const int task_id = tasks_[index].id;
     tasks_[index].priority = (tasks_[index].priority + 1) % 4;
-    std::wstring priority_text = FormatPriority(tasks_[index].priority);
-    ListView_SetItemText(list_, index, 0, priority_text.data());
-    RedrawTaskRow(index);
+    ApplyTaskOrder();
+    RefreshTaskList();
+    SelectTaskById(task_id);
     SaveTasks();
     UpdateSummary();
 }
 
-void TaskApp::ToggleTopMost()
+void TaskApp::ToggleSortMode()
 {
-    top_most_ = !top_most_;
-    SetWindowPos(
-        window_,
-        top_most_ ? HWND_TOPMOST : HWND_NOTOPMOST,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    const int selected_index = SelectedTaskIndex();
+    const int selected_task_id =
+        selected_index >= 0 && selected_index < static_cast<int>(tasks_.size()) ? tasks_[selected_index].id : -1;
+    sort_by_priority_ = !sort_by_priority_;
+    ApplyTaskOrder();
+    RefreshTaskList();
+    SelectTaskById(selected_task_id);
     UpdateButtonLabels();
     SaveSettings();
 }
@@ -1493,6 +1489,7 @@ void TaskApp::ImportTaskList()
         return;
     }
 
+    ApplyTaskOrder();
     RefreshTaskList();
     SyncReminderEditor();
     SaveTasks();
@@ -1758,6 +1755,45 @@ void TaskApp::CheckReminders()
     }
 }
 
+void TaskApp::ApplyTaskOrder()
+{
+    if (sort_by_priority_)
+    {
+        std::stable_sort(tasks_.begin(), tasks_.end(), [](const TaskItem& left, const TaskItem& right) {
+            if (left.priority != right.priority)
+            {
+                return left.priority > right.priority;
+            }
+            return left.id < right.id;
+        });
+        return;
+    }
+
+    std::sort(tasks_.begin(), tasks_.end(), [](const TaskItem& left, const TaskItem& right) {
+        return left.id < right.id;
+    });
+}
+
+void TaskApp::SelectTaskById(int task_id) const
+{
+    if (task_id < 0 || list_ == nullptr)
+    {
+        return;
+    }
+
+    for (int index = 0; index < static_cast<int>(tasks_.size()); ++index)
+    {
+        if (tasks_[index].id != task_id)
+        {
+            continue;
+        }
+
+        ListView_SetItemState(list_, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(list_, index, FALSE);
+        return;
+    }
+}
+
 void TaskApp::RefreshTaskList() const
 {
     ListView_DeleteAllItems(list_);
@@ -1816,7 +1852,7 @@ std::wstring TaskApp::BuildSummaryText() const
 
 void TaskApp::UpdateButtonLabels() const
 {
-    SetWindowTextW(top_button_, top_most_ ? L"\u5df2\u7f6e\u9876" : L"\u7f6e\u9876");
+    SetWindowTextW(top_button_, sort_by_priority_ ? L"\u6392\u5e8f \u5f00" : L"\u6392\u5e8f");
     SetWindowTextW(auto_launch_button_, auto_launch_ ? L"\u5f00\u673a\u542f\u52a8 \u5f00" : L"\u5f00\u673a\u542f\u52a8");
     SetWindowTextW(background_button_, background_path_.empty() ? L"\u80cc\u666f" : L"\u80cc\u666f\u5df2\u5f00");
     SetWindowTextW(task_list_button_, L"\u4efb\u52a1\u6e05\u5355 \u25be");
@@ -1826,7 +1862,7 @@ void TaskApp::UpdateButtonLabels() const
     SetWindowTextW(star_down_button_, L"\u964d\u661f");
     SetWindowTextW(star_up_button_, L"\u5347\u661f");
     return;
-    SetWindowTextW(top_button_, top_most_ ? L"已置顶" : L"窗口置顶");
+    SetWindowTextW(top_button_, sort_by_priority_ ? L"排序 开" : L"排序");
     SetWindowTextW(auto_launch_button_, auto_launch_ ? L"开机启动: 开" : L"开机启动");
     SetWindowTextW(background_button_, background_path_.empty() ? L"设置背景" : L"背景已开");
 }
@@ -1996,7 +2032,7 @@ void TaskApp::DrawButton(const DRAWITEMSTRUCT* draw_item) const
     const bool pressed = (draw_item->itemState & ODS_SELECTED) != 0;
     const bool disabled = (draw_item->itemState & ODS_DISABLED) != 0;
     const bool active =
-        (button == top_button_ && top_most_) || (button == auto_launch_button_ && auto_launch_) ||
+        (button == top_button_ && sort_by_priority_) || (button == auto_launch_button_ && auto_launch_) ||
         (button == background_button_ && !background_path_.empty());
 
     ButtonPalette palette{
@@ -2291,6 +2327,8 @@ void TaskApp::LoadTasks()
         next_id_ = std::max(next_id_, task.id + 1);
         tasks_.push_back(std::move(task));
     }
+
+    ApplyTaskOrder();
 }
 
 void TaskApp::SaveTasks() const
@@ -2340,9 +2378,13 @@ void TaskApp::LoadSettings()
         const std::string value = line.substr(separator + 1);
         int numeric_value = 0;
 
+        if (key == "sort_by_priority")
+        {
+            sort_by_priority_ = value == "1";
+            continue;
+        }
         if (key == "top_most")
         {
-            top_most_ = value == "1";
             continue;
         }
         if (key == "reminder_lead" && ParseInteger(value, numeric_value))
@@ -2407,7 +2449,7 @@ void TaskApp::SaveSettings() const
         return;
     }
 
-    output << "top_most\t" << (top_most_ ? "1" : "0") << '\n';
+    output << "sort_by_priority\t" << (sort_by_priority_ ? "1" : "0") << '\n';
     output << "reminder_lead\t" << reminder_lead_minutes_ << '\n';
     output << "x\t" << bounds.left << '\n';
     output << "y\t" << bounds.top << '\n';
