@@ -29,9 +29,11 @@ constexpr int kAutoLaunchButtonId = 1010;
 constexpr int kBackgroundButtonId = 1011;
 constexpr int kReminderButtonId = 1012;
 constexpr int kTaskListButtonId = 1013;
+constexpr int kClearCompletedButtonId = 1014;
+constexpr int kCompletedListId = 1015;
 constexpr UINT_PTR kUiTimerId = 1;
 constexpr int kMinWidth = 1280;
-constexpr int kMinHeight = 680;
+constexpr int kMinHeight = 760;
 constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValueName[] = L"TaskQueueDesktop";
 constexpr wchar_t kExportHeader[] = L"TASK_QUEUE_EXPORT_V1";
@@ -712,7 +714,9 @@ LRESULT TaskApp::HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM
 
             CreateChildControls();
             LoadTasks();
+            LoadCompletedTasks();
             RefreshTaskList();
+            RefreshCompletedList();
             LayoutControls();
             UpdateClock();
             SyncReminderEditor();
@@ -797,6 +801,9 @@ LRESULT TaskApp::HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM
                     case kBackgroundButtonId:
                         ChooseBackgroundImage();
                         return 0;
+                    case kClearCompletedButtonId:
+                        ClearCompletedTasks();
+                        return 0;
                     case kReminderButtonId:
                         ShowReminderMenu();
                         return 0;
@@ -879,6 +886,7 @@ LRESULT TaskApp::HandleMessage(HWND window, UINT message, WPARAM w_param, LPARAM
         case WM_CLOSE:
             KillTimer(window_, kUiTimerId);
             SaveTasks();
+            SaveCompletedTasks();
             SaveSettings();
             DestroyWindow(window);
             return 0;
@@ -1048,6 +1056,20 @@ void TaskApp::CreateChildControls()
         instance_,
         nullptr);
 
+    clear_completed_button_ = CreateWindowExW(
+        0,
+        L"BUTTON",
+        L"\u6e05\u7a7a\u5df2\u5b8c\u6210",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+        0,
+        0,
+        0,
+        0,
+        window_,
+        reinterpret_cast<HMENU>(kClearCompletedButtonId),
+        instance_,
+        nullptr);
+
     list_ = CreateWindowExW(
         WS_EX_CLIENTEDGE,
         WC_LISTVIEWW,
@@ -1062,6 +1084,20 @@ void TaskApp::CreateChildControls()
         instance_,
         nullptr);
 
+    completed_list_ = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        WC_LISTVIEWW,
+        L"",
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+        0,
+        0,
+        0,
+        0,
+        window_,
+        reinterpret_cast<HMENU>(kCompletedListId),
+        instance_,
+        nullptr);
+
     ApplyFont(input_, font_);
     ApplyFont(priority_, font_);
     ApplyFont(reminder_button_, small_font_);
@@ -1073,7 +1109,9 @@ void TaskApp::CreateChildControls()
     ApplyFont(top_button_, small_font_);
     ApplyFont(auto_launch_button_, small_font_);
     ApplyFont(background_button_, small_font_);
+    ApplyFont(clear_completed_button_, small_font_);
     ApplyFont(list_, font_);
+    ApplyFont(completed_list_, font_);
 
     SendMessageW(input_, EM_LIMITTEXT, 400, 0);
     SendMessageW(
@@ -1098,6 +1136,7 @@ void TaskApp::CreateChildControls()
     SetWindowSubclass(top_button_, HoverSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetWindowSubclass(auto_launch_button_, HoverSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetWindowSubclass(background_button_, HoverSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
+    SetWindowSubclass(clear_completed_button_, HoverSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
     SetWindowSubclass(list_, ListSubclassProc, 1, reinterpret_cast<DWORD_PTR>(this));
 
     ConfigureListView();
@@ -1116,6 +1155,24 @@ void TaskApp::CreateChildControls()
     column_update.pszText = const_cast<LPWSTR>(L"\u63d0\u9192");
     column_update.cx = 188;
     ListView_SetColumn(list_, 3, &column_update);
+
+    ListView_SetExtendedListViewStyle(
+        completed_list_,
+        LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES | LVS_EX_LABELTIP);
+    ListView_SetBkColor(completed_list_, RGB(252, 254, 255));
+    ListView_SetTextBkColor(completed_list_, RGB(252, 254, 255));
+    ListView_SetTextColor(completed_list_, RGB(30, 41, 59));
+
+    LVCOLUMNW completed_column{};
+    completed_column.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+    completed_column.pszText = const_cast<LPWSTR>(L"\u4efb\u52a1\u5185\u5bb9");
+    completed_column.cx = 760;
+    completed_column.iSubItem = 0;
+    ListView_InsertColumn(completed_list_, 0, &completed_column);
+    completed_column.pszText = const_cast<LPWSTR>(L"\u5b8c\u6210\u65f6\u95f4");
+    completed_column.cx = 220;
+    completed_column.iSubItem = 1;
+    ListView_InsertColumn(completed_list_, 1, &completed_column);
 
     UpdateButtonLabels();
 }
@@ -1221,8 +1278,33 @@ void TaskApp::LayoutControls()
     MoveWindow(background_button_, x, y, background_width, row_height, TRUE);
 
     y += row_height + 14;
-    const int list_height = std::max(170, height - y - padding);
-    MoveWindow(list_, padding, y, width - (padding * 2), list_height, TRUE);
+    const int content_height = std::max(360, height - y - padding);
+    const int completed_header_height = 38;
+    const int completed_gap = 10;
+    const int completed_list_height = std::max(140, (content_height * 33) / 100);
+    const int main_list_height = std::max(
+        180,
+        content_height - completed_header_height - completed_gap - completed_list_height);
+
+    MoveWindow(list_, padding, y, width - (padding * 2), main_list_height, TRUE);
+
+    y += main_list_height + completed_gap;
+    completed_header_bounds_.left = padding;
+    completed_header_bounds_.top = y;
+    completed_header_bounds_.right = width - padding;
+    completed_header_bounds_.bottom = y + completed_header_height;
+
+    const int clear_completed_width = 154;
+    MoveWindow(
+        clear_completed_button_,
+        width - padding - clear_completed_width,
+        y,
+        clear_completed_width,
+        row_height - 4,
+        TRUE);
+
+    y += completed_header_height + 8;
+    MoveWindow(completed_list_, padding, y, width - (padding * 2), completed_list_height, TRUE);
 
     const int total_list_width = std::max(320, width - (padding * 2));
     const int priority_column = 100;
@@ -1233,6 +1315,12 @@ void TaskApp::LayoutControls()
     ListView_SetColumnWidth(list_, 1, task_column);
     ListView_SetColumnWidth(list_, 2, added_column);
     ListView_SetColumnWidth(list_, 3, reminder_column);
+
+    const int completed_total_width = std::max(320, width - (padding * 2));
+    const int completed_time_width = 210;
+    const int completed_text_width = std::max(180, completed_total_width - completed_time_width - 8);
+    ListView_SetColumnWidth(completed_list_, 0, completed_text_width);
+    ListView_SetColumnWidth(completed_list_, 1, completed_time_width);
 }
 
 void TaskApp::AddTaskFromInput()
@@ -1271,11 +1359,16 @@ void TaskApp::DeleteSelectedTask()
         return;
     }
 
+    completed_tasks_.push_back(CompletedItem{
+        .text = tasks_[index].text,
+        .completed_at = CurrentTimestamp()});
     tasks_.erase(tasks_.begin() + index);
     hot_item_index_ = -1;
     RefreshTaskList();
+    RefreshCompletedList();
     SyncReminderEditor();
     SaveTasks();
+    SaveCompletedTasks();
 
     if (!tasks_.empty())
     {
@@ -1658,6 +1751,29 @@ void TaskApp::ClearSelectedTaskReminder()
     UpdateSummary();
 }
 
+void TaskApp::ClearCompletedTasks()
+{
+    if (completed_tasks_.empty())
+    {
+        MessageBeep(MB_ICONWARNING);
+        return;
+    }
+
+    const int result = MessageBoxW(
+        window_,
+        L"\u786e\u5b9a\u8981\u6e05\u7a7a\u5df2\u5b8c\u6210\u5217\u8868\u5417\uff1f",
+        L"\u6e05\u7a7a\u5df2\u5b8c\u6210",
+        MB_YESNO | MB_ICONQUESTION);
+    if (result != IDYES)
+    {
+        return;
+    }
+
+    completed_tasks_.clear();
+    RefreshCompletedList();
+    SaveCompletedTasks();
+}
+
 void TaskApp::UpdateClock() const
 {
     if (summary_bounds_.right > summary_bounds_.left && summary_bounds_.bottom > summary_bounds_.top)
@@ -1850,6 +1966,35 @@ std::wstring TaskApp::BuildSummaryText() const
     return summary;
 }
 
+void TaskApp::RefreshCompletedList() const
+{
+    ListView_DeleteAllItems(completed_list_);
+
+    for (int index = 0; index < static_cast<int>(completed_tasks_.size()); ++index)
+    {
+        const CompletedItem& item = completed_tasks_[index];
+
+        LVITEMW row{};
+        row.mask = LVIF_TEXT;
+        row.iItem = index;
+        row.pszText = const_cast<LPWSTR>(item.text.c_str());
+        ListView_InsertItem(completed_list_, &row);
+        ListView_SetItemText(completed_list_, index, 1, const_cast<LPWSTR>(item.completed_at.c_str()));
+    }
+
+    EnableWindow(clear_completed_button_, completed_tasks_.empty() ? FALSE : TRUE);
+    if (completed_header_bounds_.right > completed_header_bounds_.left &&
+        completed_header_bounds_.bottom > completed_header_bounds_.top)
+    {
+        InvalidateRect(window_, &completed_header_bounds_, FALSE);
+    }
+}
+
+std::wstring TaskApp::BuildCompletedSummaryText() const
+{
+    return L"\u5df2\u5b8c\u6210 " + std::to_wstring(completed_tasks_.size()) + L" \u9879";
+}
+
 void TaskApp::UpdateButtonLabels() const
 {
     SetWindowTextW(top_button_, sort_by_priority_ ? L"\u6392\u5e8f \u5f00" : L"\u6392\u5e8f");
@@ -1861,6 +2006,7 @@ void TaskApp::UpdateButtonLabels() const
     SetWindowTextW(delete_button_, L"\u5b8c\u6210\u4efb\u52a1");
     SetWindowTextW(star_down_button_, L"\u964d\u661f");
     SetWindowTextW(star_up_button_, L"\u5347\u661f");
+    SetWindowTextW(clear_completed_button_, L"\u6e05\u7a7a\u5df2\u5b8c\u6210");
     return;
     SetWindowTextW(top_button_, sort_by_priority_ ? L"排序 开" : L"排序");
     SetWindowTextW(auto_launch_button_, auto_launch_ ? L"开机启动: 开" : L"开机启动");
@@ -2017,6 +2163,39 @@ void TaskApp::PaintWindow(HDC device_context) const
         const std::wstring clock_text = CurrentClockTimestamp();
         graphics.DrawString(summary_text.c_str(), -1, &text_font, summary_text_rect, &summary_format, &summary_text_brush);
         graphics.DrawString(clock_text.c_str(), -1, &text_font, clock_rect, &clock_format, &clock_text_brush);
+    }
+
+    if (completed_header_bounds_.right > completed_header_bounds_.left &&
+        completed_header_bounds_.bottom > completed_header_bounds_.top)
+    {
+        Gdiplus::RectF completed_panel(
+            static_cast<REAL>(completed_header_bounds_.left),
+            static_cast<REAL>(completed_header_bounds_.top),
+            static_cast<REAL>(completed_header_bounds_.right - completed_header_bounds_.left),
+            static_cast<REAL>(completed_header_bounds_.bottom - completed_header_bounds_.top));
+        Gdiplus::GraphicsPath completed_path;
+        AddRoundedRectangle(completed_path, completed_panel, 14.0F);
+
+        Gdiplus::SolidBrush completed_fill(MakeColor(205, 255, 255, 255));
+        graphics.FillPath(&completed_fill, &completed_path);
+
+        Gdiplus::Pen completed_border(MakeColor(255, 221, 229, 240), 1.0F);
+        graphics.DrawPath(&completed_border, &completed_path);
+
+        Gdiplus::RectF completed_text_rect(
+            completed_panel.X + 16.0F,
+            completed_panel.Y + 2.0F,
+            std::max<REAL>(80.0F, completed_panel.Width - 196.0F),
+            completed_panel.Height - 4.0F);
+        Gdiplus::SolidBrush completed_text_brush(MakeColor(255, 74, 89, 112));
+        Gdiplus::Font completed_font(device_context, small_font_);
+        Gdiplus::StringFormat completed_format;
+        completed_format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+        completed_format.SetFormatFlags(Gdiplus::StringFormatFlagsNoWrap);
+
+        const std::wstring completed_text = BuildCompletedSummaryText();
+        graphics.DrawString(
+            completed_text.c_str(), -1, &completed_font, completed_text_rect, &completed_format, &completed_text_brush);
     }
 }
 
@@ -2233,6 +2412,11 @@ std::wstring TaskApp::BuildTaskLine(const TaskItem& task, bool include_internal_
     return line;
 }
 
+std::wstring TaskApp::BuildCompletedLine(const CompletedItem& item) const
+{
+    return item.completed_at + L"\t" + Escape(item.text);
+}
+
 bool TaskApp::ParseTaskLine(std::string_view line, TaskItem& task, bool allow_legacy_format) const
 {
     std::vector<std::string_view> parts;
@@ -2298,6 +2482,19 @@ bool TaskApp::ParseTaskLine(std::string_view line, TaskItem& task, bool allow_le
     return !task.text.empty();
 }
 
+bool TaskApp::ParseCompletedLine(std::string_view line, CompletedItem& item) const
+{
+    const std::size_t separator = line.find('\t');
+    if (separator == std::string_view::npos)
+    {
+        return false;
+    }
+
+    item.completed_at = Utf8ToWide(line.substr(0, separator));
+    item.text = Unescape(Utf8ToWide(line.substr(separator + 1)));
+    return !item.text.empty() && !item.completed_at.empty();
+}
+
 void TaskApp::LoadTasks()
 {
     tasks_.clear();
@@ -2346,6 +2543,56 @@ void TaskApp::SaveTasks() const
     for (const TaskItem& task : tasks_)
     {
         output << WideToUtf8(BuildTaskLine(task, true)) << '\n';
+    }
+}
+
+void TaskApp::LoadCompletedTasks()
+{
+    completed_tasks_.clear();
+
+    const std::filesystem::path path(CompletedTaskFilePath());
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+    {
+        return;
+    }
+
+    std::string line;
+    while (std::getline(input, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+        {
+            line.pop_back();
+        }
+        if (line.empty())
+        {
+            continue;
+        }
+
+        CompletedItem item;
+        if (!ParseCompletedLine(line, item))
+        {
+            continue;
+        }
+        completed_tasks_.push_back(std::move(item));
+    }
+}
+
+void TaskApp::SaveCompletedTasks() const
+{
+    const std::filesystem::path path(CompletedTaskFilePath());
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    if (!output)
+    {
+        return;
+    }
+
+    for (const CompletedItem& item : completed_tasks_)
+    {
+        output << WideToUtf8(BuildCompletedLine(item)) << '\n';
     }
 }
 
@@ -2516,6 +2763,23 @@ std::wstring TaskApp::TaskFilePath() const
     const std::size_t separator = fallback.find_last_of(L"\\/");
     const std::wstring folder = separator == std::wstring::npos ? L"." : fallback.substr(0, separator);
     return folder + L"\\tasks.txt";
+}
+
+std::wstring TaskApp::CompletedTaskFilePath() const
+{
+    wchar_t appdata[MAX_PATH]{};
+    const DWORD size = GetEnvironmentVariableW(L"APPDATA", appdata, MAX_PATH);
+    if (size > 0 && size < MAX_PATH)
+    {
+        return std::wstring(appdata) + L"\\TaskQueue\\completed.txt";
+    }
+
+    wchar_t module_path[MAX_PATH]{};
+    GetModuleFileNameW(instance_, module_path, MAX_PATH);
+    std::wstring fallback(module_path);
+    const std::size_t separator = fallback.find_last_of(L"\\/");
+    const std::wstring folder = separator == std::wstring::npos ? L"." : fallback.substr(0, separator);
+    return folder + L"\\completed.txt";
 }
 
 std::wstring TaskApp::SettingsFilePath() const
