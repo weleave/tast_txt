@@ -63,7 +63,7 @@ private:
     void DeleteSelectedTask();
     void ChangeSelectedPriority(int delta);
     void CycleSelectedPriority();
-    void ToggleTopMost();
+    void ToggleSortMode();
     void ToggleAutoLaunch();
     void ChooseBackgroundImage();
     void ExportTaskList();
@@ -81,6 +81,8 @@ private:
     void TrackListHover();
     void SyncReminderEditor();
     void CheckReminders();
+    void ApplyTaskOrder();
+    void SelectTaskById(int task_id) const;
     void PaintWindow(HDC device_context) const;
     void DrawButton(const DRAWITEMSTRUCT* draw_item) const;
     LRESULT HandleListCustomDraw(LPARAM l_param) const;
@@ -132,7 +134,7 @@ private:
     HFONT font_{nullptr};
     HFONT small_font_{nullptr};
     HBRUSH edit_brush_{nullptr};
-    bool top_most_{false};
+    bool sort_by_priority_{false};
     bool auto_launch_{false};
     int reminder_lead_minutes_{10};
     int next_id_{1};
